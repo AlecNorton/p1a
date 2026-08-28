@@ -35,14 +35,22 @@ class DataReader:
         #Several parts of VICON data has NANS! Resolve by simply excluding them from dataset. 
         vicon_ts = self.vicon_mat['ts'][0]
         vicon_data = []
+        rotMats = []
         for i in range(0, len(vicon_ts)):
             rotMat = self.vicon_mat['rots'][0:, 0:, i]
             if(np.isnan(rotMat[0][0])):
                 #Invalid. 
                 vicon_ts = np.delete(vicon_ts, i)
-            else:
-                vicon_data.append(rotMat)
-        self.vicon_mat['rots'] = vicon_data
+                print(f"Matrix {i} included NaNs, do not include...")
+                continue
+            try:
+                scipy.spatial.transform.Rotation.from_matrix(rotMat)
+                rotMats.append(rotMat)
+            except ValueError:
+                print(f"Matrix {i} is not a valid rotational matrix...{rotMat}")
+                #print(f"Determinant is {scipy.linalg.det(rotMat)}")
+                vicon_ts = np.delete(vicon_ts, i)
+        self.vicon_mat['rots'] = scipy.spatial.transform.Rotation.from_matrix(rotMats)
         self.vicon_mat['ts'] = vicon_ts            
 
     #Determine gyro bias by averaging 
@@ -108,23 +116,12 @@ class DataReader:
             startIndex = np.where(self.imu_mat['ts'] == new_vicon_ts[0])[0][0]
 
             endIndex = np.where(self.imu_mat['ts'] == new_vicon_ts[-1])[0][0] +1
-            new_vicon_mat = [scipy.spatial.transform.Rotation.from_matrix(self.get_sample(i, False)) for i in range(startIndex, endIndex)]
+            new_vicon_mat = [self.get_sample(i, False) for i in range(startIndex, endIndex)]
             self.vicon_mat['rots'] = new_vicon_mat
             self.vicon_mat['ts'] = new_vicon_ts
         else:
             print("Interpolating vicon.")
-            rotMats = []
-            for i in range(0, len(vicon_ts)):
-                rotMat = self.get_sample(i, False)
-                try:
-                    scipy.spatial.transform.Rotation.from_matrix(rotMat)
-                    rotMats.append(rotMat)
-                except ValueError:
-                    print(f"Matrix {i} is not a valid rotational matrix...{rotMat}")
-                    #print(f"Determinant is {scipy.linalg.det(rotMat)}")
-                    vicon_ts = np.delete(vicon_ts, i)
-            key_rot = scipy.spatial.transform.Rotation.from_matrix(rotMats)
-            slerp = scipy.spatial.transform.Slerp(vicon_ts, key_rot)
+            slerp = scipy.spatial.transform.Slerp(vicon_ts, self.vicon_mat['rots'])
             imu_ts = list(filter(lambda x: x >= vicon_ts[0] and x<= vicon_ts[-1], imu_ts))
             self.imu_mat['ts'] = imu_ts
             vals = self.imu_mat['vals']
