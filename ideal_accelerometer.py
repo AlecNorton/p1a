@@ -1,0 +1,54 @@
+from DataReader import DataReader
+import matplotlib.pyplot as plt
+import numpy as np
+import math
+dr = DataReader(2)
+
+fig = plt.figure()
+ax1 = fig.add_subplot()
+#Assume start at zero.
+orientation = []
+bias = dr.accel_model[0]
+noise = dr.accel_model[1]
+gamma = .2
+for i in range(0, len(dr.imu_mat['ts'])):
+    [ax, ay, az, wz, wy, wz] = dr.get_sample(i, True)
+    
+    roll = math.atan( (ay / math.sqrt(math.pow(ax, 2) + math.pow(az, 2)))) 
+    pitch= math.atan( (ax / math.sqrt(math.pow(ay, 2) + math.pow(az, 2)))) 
+    yaw = math.atan( (math.sqrt(math.pow(ax, 2) + math.pow(ay, 2)))/az)
+
+    
+    #Perform low-pass filter. 
+    if(i > 0):
+        roll = (1-gamma)*orientation[i-1][0] + gamma*roll
+        pitch = (1-gamma)*orientation[i-1][1] + gamma*pitch
+        yaw = (1-gamma)*orientation[i-1][2] + gamma*yaw
+    orientation.append([roll, pitch, yaw])
+
+roll_accel = [orient[0] for orient in orientation[0:]]
+pitch_accel= [orient[1] for orient in orientation[0:]]
+yaw_accel = [orient[2] for orient in orientation[0:]]
+
+print(roll_accel)
+
+#Roll and pitch seem to be swatched
+vicon = dr.vicon_mat['rots'].as_euler('ZYX')
+yaw_vicon = [euler[0] for euler in vicon[0:]]
+roll_vicon = [euler[1] for euler in vicon[0:]]
+pitch_vicon = [euler[2] for euler in vicon[0:]]
+
+ax1.plot(dr.imu_mat['ts'][0:], roll_accel, label = 'ROLL_ACCEL')
+ax1.plot(dr.imu_mat['ts'][0:], pitch_accel, label = 'PITCH_ACCEL')
+ax1.plot(dr.imu_mat['ts'][0:], yaw_accel, label = 'YAW_ACCEL')
+
+fig2 = plt.figure()
+ax2 = fig2.add_subplot()
+ax2.plot(dr.vicon_mat['ts'], roll_vicon, label = 'ROLL_VICON')
+ax2.plot(dr.vicon_mat['ts'], pitch_vicon, label = 'PITCH_VICON')
+ax2.plot(dr.vicon_mat['ts'], yaw_vicon, label = 'YAW_VICON')
+ax1.legend()
+ax2.legend()
+plt.show()
+
+
