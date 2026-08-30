@@ -8,19 +8,21 @@ class DataReader:
         self.vicon_mat_path = "p1a/Data/Train/Vicon/viconRot" + str(mat_number) + ".mat"
         self.imu_mat = io.loadmat(self.imu_mat_path)
         self.vicon_mat = io.loadmat(self.vicon_mat_path)
-        self.params_mat = io.loadmat('p1a/IMUParams.mat')
-        self.gyro_model = self.gyro_model_calibrate(300)
-        #self.accel_model 
+        self.params_mat = io.loadmat('p1a/IMUParams.mat')['IMUParams']
+        self.gyro_bias = self.gyro_bias_calibrate(200)
+        self.gyro_noise = self.gyro_noise_calibrate(200)
         self.clean()
         self.align()
         #Perform again to get updated values for current units
-        self.gyro_model = self.gyro_model_calibrate(100)
-        self.accel_model = self.accel_model_calibrate(100)
+        #self.gyro_model = self.gyro_model_calibrate(200)
+        #self.accel_model = self.accel_model_calibrate(200)
 
     
     #Convert IMU linear and rotational velocities based on described equations. 
+    
     def clean(self):
         #Cleaning IMU
+        '''
         val_type_index = 0
         new_list = []
         for val_type in self.imu_mat['vals']:
@@ -35,6 +37,7 @@ class DataReader:
                 new_list[val_type_index].append(new_val)
             val_type_index = val_type_index + 1
         self.imu_mat['vals'] = new_list
+        '''
         self.imu_mat['ts'] = self.imu_mat['ts'][0]
 
         #Several parts of VICON data has NANS! Resolve by simply excluding them from dataset. 
@@ -56,30 +59,33 @@ class DataReader:
                 #print(f"Determinant is {scipy.linalg.det(rotMat)}")
                 vicon_ts = np.delete(vicon_ts, i)
         self.vicon_mat['rots'] = scipy.spatial.transform.Rotation.from_matrix(rotMats)
-        self.vicon_mat['ts'] = vicon_ts            
+        self.vicon_mat['ts'] = vicon_ts     
+      
 
     #Determine gyro bias by averaging 
-    def gyro_model_calibrate(self, num_entries):
+    def gyro_bias_calibrate(self, num_entries):
         gyro_bias_z = np.mean(self.imu_mat['vals'][3][0:num_entries])
         gyro_bias_y = np.mean(self.imu_mat['vals'][4][0:num_entries])
         gyro_bias_x = np.mean(self.imu_mat['vals'][5][0:num_entries])
-        
-        gyro_noise_z = np.std(self.imu_mat['vals'][3][0:num_entries])
-        gyro_noise_y = np.std(self.imu_mat['vals'][4][0:num_entries])
-        gyro_noise_x = np.std(self.imu_mat['vals'][5][0:num_entries])
-        gyro_bias = [gyro_bias_z, gyro_bias_y, gyro_bias_x]
-        gyro_noise = [gyro_noise_z, gyro_noise_y, gyro_noise_x]
-        return [[bias for bias in gyro_bias], gyro_noise]
+
+        return [gyro_bias_z, gyro_bias_y, gyro_bias_x]
+
+    def gyro_noise_calibrate(self, num_entries):
+        gyro_noise = []
+        for gyro in range(3, 6):
+            new_list = []
+            for i in range(0, len(self.imu_mat['vals'][gyro])):
+                vals = self.get_sample(i, True)
+                new_list.append(vals[gyro])
+            gyro_noise.append(np.std(new_list))
+        return gyro_noise
 
     def accel_model_calibrate(self, num_entries):
         accel_bias_x = np.mean(self.imu_mat['vals'][0][0:num_entries])
         accel_bias_y = np.mean(self.imu_mat['vals'][1][0:num_entries])
         accel_bias_z = np.mean(self.imu_mat['vals'][2][0:num_entries])
 
-        accel_noise_x = np.std(self.imu_mat['vals'][0][0:num_entries])
-        accel_noise_y = np.std(self.imu_mat['vals'][1][0:num_entries])
-        accel_noise_z = np.std(self.imu_mat['vals'][2][0:num_entries])
-        return [[accel_bias_x, accel_bias_y, accel_bias_z], [accel_noise_x, accel_noise_y, accel_noise_z]]
+        return [[accel_bias_x, accel_bias_y, accel_bias_z]]
 
     def align(self):
         vicon_ts = self.vicon_mat['ts']
@@ -142,15 +148,18 @@ class DataReader:
 
         print("Interpolating vicon.")
         slerp = scipy.spatial.transform.Slerp(vicon_ts, self.vicon_mat['rots'])
+        #Ensure all imu_ts are within slerp ability to inteprolate. 
         new_imu_ts = list(filter(lambda x: x >= vicon_ts[0] and x<= vicon_ts[-1], imu_ts))
+        #Get start and end index of new range of new_imu_ts
         startIndex = np.where(self.imu_mat['ts'] == new_imu_ts[0])[0][0]
         endIndex = np.where(self.imu_mat['ts'] == new_imu_ts[-1])[0][0]+1
         self.imu_mat['ts'] = new_imu_ts
         self.vicon_mat['ts'] = new_imu_ts
         vals = self.imu_mat['vals']
+        new_list = []
         for i in range(0, 6):
-            vals[i] = vals[i][startIndex:endIndex]
-        self.imu_mat['vals'] = vals
+            new_list.append(vals[i][startIndex:endIndex])
+        self.imu_mat['vals'] = new_list
         self.vicon_mat['rots'] = slerp(new_imu_ts)
 
     def search(self, list, val):
@@ -164,14 +173,36 @@ class DataReader:
                 break
         return correctIndex, list[correctIndex:]
 
-    def get_sample(self, index, data_flag):
+    def get_sample(self, i, data_flag):
         if(data_flag):
             #Collect imu_mat data
             vals = self.imu_mat['vals']
-            return np.array([vals[0][index], vals[1][index], vals[2][index], vals[3][index], vals[4][index], vals[5][index]])
+            return np.array(self.convert_linear_accel([vals[0][i], vals[1][i], vals[2][i]])+self.convert_rotational_accel([vals[3][i], vals[4][i], vals[5][i]]))
         else:
-            rot = self.vicon_mat['rots'][index]
+            rot = self.vicon_mat['rots'][i]
             return rot
+    
+    def convert_linear_accel(self, accel):
+        
+        [ax, ay, az] = [accel[0], accel[1], accel[2]]
+        '''
+        conv_ax = ((ax + self.params_mat[1][0]) / self.params_mat[0][0])
+        conv_ay = ((ay + self.params_mat[1][1]) / self.params_mat[0][1])
+        conv_az = ((az + self.params_mat[1][2]) / self.params_mat[0][2])
+        '''
+        
+        conv_ax = (ax*self.params_mat[0][0] + self.params_mat[1][0])*9.81
+        conv_ay = (ay*self.params_mat[0][1] + self.params_mat[1][1])*9.81
+        conv_az = (az*self.params_mat[0][2] + self.params_mat[1][2])*9.81
+        
+        return [conv_ax, conv_ay, conv_az]
+    
+    def convert_rotational_accel(self, acc):
+        [wz, wy, wx] = [acc[0], acc[1], acc[2]]
+        conv_wx = (3300/1023)* (math.pi/180) * .3 * (wx - self.gyro_bias[2])
+        conv_wy = (3300/1023)* (math.pi/180) * .3 * (wy - self.gyro_bias[1])
+        conv_wz = (3300/1023)* (math.pi/180) * .3 * (wz - self.gyro_bias[0])
+        return [conv_wz, conv_wy, conv_wx]
             
         
 
