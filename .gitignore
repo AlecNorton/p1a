@@ -1,3 +1,6 @@
 .venv
 p1a
 __pycache__
+data/
+trial.py
+
