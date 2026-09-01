@@ -323,6 +323,65 @@ def complimentary(ts, wx, wy, wz, R0_3x3,accel):
    
     return comp_rpy
 
+def madgwick(ts, wx, wy, wz, R0_3x3,accel):
+    beta=0.02
+    ts = np.asarray(ts).ravel()
+    wx = np.asarray(wx).ravel(); wy = np.asarray(wy).ravel(); wz = np.asarray(wz).ravel()
+
+    N = ts.size
+    if any(arr.size != N for arr in [wx, wy, wz]):
+        raise ValueError("ts,wx,wy,wz mismatch")
+    madgwick_rpy =np.empty((N,3), dtype=float)
+    current_R = R.from_matrix(R0_3x3)
+    current_rpy=current_R.as_euler('ZYX', degrees=False)
+    q2,q3,q4,q1=current_R.as_quat() # qx qy qz w but following w,x,y,z convention
+    current_q=np.array([q1, q2, q3, q4]).T #4,
+    accel=accel/np.linalg.norm(accel,axis=0)
+    ax,ay,az=accel
+    madgwick_rpy[0]=current_rpy 
+    for k in range(N-1):
+        func=np.array([[2*(q2*q4-q1*q3)-ax[k]],
+                       [2*(q1*q2+q3*q4)-ay[k]],
+                       [2*(0.5-q2**2-q3**2)-az[k]]]) # q*g*q'-a basically cost function to minimize error
+        jacob=np.array([[-2*q3, 2*q4, -2*q1, 2*q2],
+                       [2*q2, 2*q1, 2*q4, 2*q3],
+                        [0, -4*q2, -4*q3, 0]]) # Jacobian
+        #print((jacob.T).shape)
+        #rint(func.shape)
+        func=np.reshape(func,(3,1))
+        grad=jacob.T@func
+        grad_norm=grad/(np.linalg.norm(grad)) # direction of norm
+#________ ends accel contribution     
+
+        d_gyro =np.array([wx[k], wy[k], wz[k],0])
+        x1,y1,z1,w1=current_R.as_quat()
+        lq=np.array([[ w1,  -z1, y1,  x1],
+                    [z1,  w1,  -x1,  y1],
+                    [ -y1, x1,  w1,  z1],
+                    [-x1, -y1, -z1,  w1]])
+        '''
+        lq=np.array([[ w1,  z1, -y1,  x1],
+                            [-z1,  w1,  x1,  y1],
+                            [ y1, -x1,  w1,  z1],
+                            [-x1, -y1, -z1,  w1]])'''
+        wglobal = 0.5*(lq @ d_gyro) # w in global reference frame
+        qx,qy,qz,qw=wglobal
+        wglobal_q=np.array([qw,qx,qy,qz])
+        fusion=wglobal_q[:,np.newaxis] - beta*grad_norm # 4*1 => one step descend
+        dt = ts[k + 1] - ts[k]
+        if dt <= 0:
+            raise ValueError("IMU timestamps must be strictly increasing")
+             
+        fusion_int_rawq=current_q[:,np.newaxis] + fusion*dt # theta+w*dt = integration
+        current_q=(fusion_int_rawq/np.linalg.norm(fusion_int_rawq)).ravel()
+        q1,q2,q3,q4=current_q # w,x,y,z
+        current_R=R.from_quat(np.array([q2,q3,q4,q1])) #x,y,z,w
+  
+        madgwick_rpy[k + 1,:] =  current_R.as_euler('ZYX', degrees=False)
+   
+    return madgwick_rpy
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Compute and plot gyro-only and accel-only orientations from dataset number.")
@@ -369,20 +428,23 @@ def main():
     
     #complimentary filter
     comp_rpy=complimentary(t_imu, wx, wy, wz, vicon_rotation[0].as_matrix(),accel_updates)
-    print(comp_rpy[:5,:])
+
+    accel_raw=np.stack([ax,ay,az],axis=0) 
+    madgwick_rpy=madgwick(t_imu, wx, wy, wz, vicon_rotation[0].as_matrix(),accel_raw)
 
     figure, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     series = [
-        ("Roll", vicon_roll, gyro_roll, accel_roll,comp_rpy[:,2]),
-        ("Pitch", vicon_pitch, gyro_pitch, accel_pitch,comp_rpy[:,1]),
-        ("Yaw", vicon_yaw, gyro_yaw, accel_yaw,comp_rpy[:,0]),
+        ("Roll", vicon_roll, gyro_roll, accel_roll,comp_rpy[:,2],madgwick_rpy[:,2]),
+        ("Pitch", vicon_pitch, gyro_pitch, accel_pitch,comp_rpy[:,1],madgwick_rpy[:,1]),
+        ("Yaw", vicon_yaw, gyro_yaw, accel_yaw,comp_rpy[:,0],madgwick_rpy[:,0]),
     ]
 
-    for axis, (name, vicon_angle, gyro_angle, accel_angle,comp_angle) in zip(axes, series):
+    for axis, (name, vicon_angle, gyro_angle, accel_angle,comp_angle,mad_angle) in zip(axes, series):
         axis.plot(t_imu, vicon_angle, label="Vicon")
         axis.plot(t_imu, gyro_angle, label="Gyro-only")
         axis.plot(t_imu, accel_angle, label="Accel-only (LPF)")
         axis.plot(t_imu, comp_angle, label="Complimentary filter")
+        axis.plot(t_imu, mad_angle, label="Madgwick filter")
         axis.set_ylabel(f"{name} (rad)")
         axis.grid(True, alpha=0.3)
         axis.legend(loc="best")
