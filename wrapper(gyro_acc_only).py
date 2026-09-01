@@ -57,6 +57,7 @@ class DataReader:
             gyro_bias_y = gyro_bias_y + float(self.imu_mat['vals'][4][i])
             gyro_bias_z = gyro_bias_z + float(self.imu_mat['vals'][5][i])
         gyro_bias = [gyro_bias_x, gyro_bias_y, gyro_bias_z]
+        #print(np.array(gyro_bias).shape)
         return [bias/num_entries for bias in gyro_bias]
 
     def align(self):
@@ -220,9 +221,15 @@ def load_calibrate_and_sync(reader):
     accel_bias = params[1]
 
     # Report equation: a_tilde = (a_raw * scale + bias) * 9.81.
+    '''
     acceleration = (
         raw[0:3] * scale[:, None] + accel_bias[:, None]
     ) * 9.81
+    '''
+    ac_with_bias= (raw[0:3] * scale[:, None] + accel_bias[:, None])
+    multiplier=9.81/(np.mean(np.sqrt(ac_with_bias[0,:100]**2 + ac_with_bias[1,:100]**2 + ac_with_bias[2,:100]**2)))
+    acceleration=ac_with_bias * multiplier
+
 
     # Raw channel order is [ax, ay, az, wz, wx, wy].
     # Bias is calculated in the same raw order from the first 100 samples,
